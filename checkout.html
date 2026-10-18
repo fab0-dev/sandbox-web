@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pay for your order</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- To use another payments service, set its address before the module loads:
+  <script>window.CHECKOUT_CONFIG = { paymentsBaseUrl: 'https://payments.example.com' };</script>
+  -->
+  <script type="module" src="src/checkout.js"></script>
+</head>
+<body>
+  <main class="checkout">
+    <h1>Pay for your order</h1>
+
+    <p id="link-error" class="alert alert-error" role="alert" hidden></p>
+
+    <dl id="order-summary" class="summary" hidden>
+      <div><dt>Order</dt><dd id="summary-order"></dd></div>
+      <div><dt>Amount to pay</dt><dd id="summary-amount"></dd></div>
+    </dl>
+
+    <p id="loading" class="alert" role="status" hidden>Loading your order…</p>
+
+    <div id="load-error" class="alert alert-error" role="alert" hidden>
+      <p id="load-error-message"></p>
+      <button type="button" id="retry-load">Try again</button>
+    </div>
+
+    <section id="paid-panel" class="alert alert-success" role="status" hidden>
+      <h2>This order is paid</h2>
+      <p id="paid-refusal" hidden></p>
+      <dl>
+        <div id="paid-amount-row"><dt>Amount charged</dt><dd id="paid-amount"></dd></div>
+        <div id="paid-card-row"><dt>Card</dt><dd id="paid-card"></dd></div>
+      </dl>
+    </section>
+
+    <form id="payment-form" novalidate hidden>
+      <p id="form-notice" class="alert alert-error" role="alert" hidden></p>
+      <div id="decline-panel" class="alert alert-error" role="alert" hidden>
+        <h2>The payment did not go through</h2>
+        <p id="decline-message"></p>
+        <p>Your order has not been charged. You can try again below.</p>
+      </div>
+
+      <fieldset id="payment-fieldset">
+        <legend>Card details</legend>
+
+        <div class="field">
+          <label for="cardholder_name">Cardholder name</label>
+          <input id="cardholder_name" name="cardholder_name" type="text" autocomplete="cc-name"
+                 aria-describedby="error-cardholder_name">
+          <p id="error-cardholder_name" class="field-error" hidden></p>
+        </div>
+
+        <div class="field">
+          <label for="number">Card number</label>
+          <input id="number" name="number" type="text" inputmode="numeric" autocomplete="cc-number"
+                 aria-describedby="error-number">
+          <p id="error-number" class="field-error" hidden></p>
+        </div>
+
+        <div class="field">
+          <span class="label" id="expiry-label">Expiry date</span>
+          <div class="expiry" role="group" aria-labelledby="expiry-label" aria-describedby="error-expiry">
+            <input id="expiry_month" name="expiry_month" type="text" inputmode="numeric"
+                   autocomplete="cc-exp-month" placeholder="MM" maxlength="2" aria-label="Expiry month">
+            <span aria-hidden="true">/</span>
+            <input id="expiry_year" name="expiry_year" type="text" inputmode="numeric"
+                   autocomplete="cc-exp-year" placeholder="YYYY" maxlength="4" aria-label="Expiry year">
+          </div>
+          <p id="error-expiry" class="field-error" hidden></p>
+        </div>
+
+        <div class="field">
+          <label for="security_code">Security code</label>
+          <input id="security_code" name="security_code" type="text" inputmode="numeric"
+                 autocomplete="cc-csc" maxlength="4" aria-describedby="error-security_code">
+          <p id="error-security_code" class="field-error" hidden></p>
+        </div>
+      </fieldset>
+
+      <button type="submit" id="submit-button">Pay</button>
+    </form>
+  </main>
+</body>
+</html>

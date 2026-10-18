@@ -1,0 +1,80 @@
+:root {
+  --text: #1c2430;
+  --muted: #5b6676;
+  --line: #c9d1dc;
+  --accent: #2455d6;
+  --error: #a4261f;
+  --error-bg: #fdecea;
+  --success: #17653a;
+  --success-bg: #e6f6ec;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: #f5f7fa;
+}
+
+.checkout {
+  max-width: 28rem;
+  margin: 2rem auto;
+  padding: 1.5rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+
+[hidden] { display: none !important; }
+
+.summary, .alert dl { margin: 0 0 1rem; }
+.summary div, .alert dl div { display: flex; justify-content: space-between; gap: 1rem; }
+.summary dt, .alert dt { color: var(--muted); }
+.summary dd, .alert dd { margin: 0; font-weight: 600; }
+
+fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 1rem; padding: .75rem 1rem 1rem; }
+legend { padding: 0 .25rem; font-weight: 600; }
+
+.field { margin-top: .75rem; }
+label, .label { display: block; margin-bottom: .25rem; font-weight: 500; }
+
+input {
+  width: 100%;
+  padding: .5rem .6rem;
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+input[aria-invalid="true"] { border-color: var(--error); }
+
+.expiry { display: flex; align-items: center; gap: .5rem; }
+.expiry input { width: 6rem; }
+
+.field-error { margin: .25rem 0 0; color: var(--error); font-size: .9rem; }
+
+button {
+  padding: .6rem 1.2rem;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:disabled { opacity: .6; cursor: not-allowed; }
+#submit-button { width: 100%; }
+
+.alert { margin: 0 0 1rem; padding: .75rem 1rem; border-radius: 6px; background: #eef2f7; }
+.alert p { margin: 0 0 .5rem; }
+.alert p:last-child { margin-bottom: 0; }
+.alert-error { color: var(--error); background: var(--error-bg); }
+.alert-success { color: var(--success); background: var(--success-bg); }
+
+/* A temporary failure is not the customer's card: show it in a calmer colour. */
+#decline-panel[data-reason="processing_error"] { color: #7a4b00; background: #fff4de; }
