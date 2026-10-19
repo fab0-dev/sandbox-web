@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sandbox checkout</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="checkout">
+    <h1>Sandbox checkout</h1>
+    <p>
+      The payment step of the checkout takes the order from the address:
+      <code>checkout.html?order=ORDER&amp;amount=2599&amp;currency=USD</code>.
+      The amount is in minor units (2599 is 25.99). Payments run in test mode and no money moves.
+    </p>
+
+    <form action="checkout.html" method="get">
+      <fieldset>
+        <legend>Start a test checkout</legend>
+        <div class="field">
+          <label for="order">Order reference</label>
+          <input id="order" name="order" type="text" value="ORD-1001" required>
+        </div>
+        <div class="field">
+          <label for="amount">Amount, in minor units</label>
+          <input id="amount" name="amount" type="text" inputmode="numeric" value="2599" pattern="[0-9]+" required>
+        </div>
+        <div class="field">
+          <label for="currency">Currency</label>
+          <input id="currency" name="currency" type="text" value="USD" pattern="[A-Za-z]{3}" maxlength="3" required>
+        </div>
+      </fieldset>
+      <button type="submit">Go to payment</button>
+    </form>
+  </main>
+</body>
+</html>
