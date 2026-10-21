@@ -18,6 +18,9 @@
 //   - Shows paid and the amount charged (D2), the decline message as the service sent it, on the same page
 //     with the form ready to retry (D3, D5), field errors from the browser or the service (D4), and the
 //     already-paid refusal (D6).
+//   - A refunded order shows as refunded, with the date of the refund in the customer's own time zone, and no
+//     form (D13). The shop's reason is not shown. If Pay order is refused because the order was refunded
+//     meanwhile, the service's message is shown as it is, then the refunded panel with the date (D14).
 //   - Clears the card number and security code after each attempt that was sent (D10).
 //
 // Card data (D10): the card number and security code are read from the form inside submit(), handed to
@@ -69,6 +72,24 @@ export function formatAmount(amount, currency) {
   }
 }
 
+/**
+ * The date of a refund as a customer reads it, for example "October 18, 2026", in the browser's own time
+ * zone (or `timeZone`, an IANA name, when given). `iso` is the time as the service sends it (ISO 8601, UTC).
+ * Returns null when there is no usable time.
+ */
+export function formatRefundDate(iso, timeZone) {
+  if (typeof iso !== 'string' || iso === '') return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  try {
+    const options = { dateStyle: 'long' };
+    if (timeZone) options.timeZone = timeZone;
+    return new Intl.DateTimeFormat('en-US', options).format(date);
+  } catch {
+    return null;
+  }
+}
+
 function cardLabel(card) {
   if (!card || !card.last4) return null;
   const brand = BRAND_NAMES[card.brand] || 'Card';
@@ -92,9 +113,11 @@ function paidDetails(payment) {
  * @param {object} [options.api]  { payOrder, getOrderPaymentStatus }; the payments API client by default.
  * @param {Function} [options.validate]  card validation; src/card-validation.js by default.
  * @param {Function} [options.now]  returns the current Date, for the expiry check.
+ * @param {Function} [options.formatDate]  turns the service's refund time into the date shown;
+ *   formatRefundDate (the browser's time zone) by default.
  *
  * State given to view.render():
- *   phase        'invalid_link' | 'loading' | 'load_error' | 'ready' | 'processing' | 'paid'
+ *   phase        'invalid_link' | 'loading' | 'load_error' | 'ready' | 'processing' | 'paid' | 'refunded'
  *   summary      { order, amountText } or null
  *   message      text for the phase: the link problem, or the load error
  *   notice       a general message above the form (a refusal or a failure), or null
@@ -104,8 +127,11 @@ function paidDetails(payment) {
  *   paid         { amountText, card, refusal } when phase is 'paid', or null. amountText is the amount
  *                charged, or null when it is not known. refusal is the service's already-paid message
  *                when the customer tried to pay an order that was paid.
+ *   refunded     { dateText, refusal } when phase is 'refunded', or null. dateText is the date of the refund
+ *                in the customer's time zone, or null when no time is known. refusal is the service's
+ *                message when the customer tried to pay an order that was refunded, else null.
  */
-export function createCheckout({ order, view, api, validate = validateCard, now = () => new Date() }) {
+export function createCheckout({ order, view, api, validate = validateCard, now = () => new Date(), formatDate = formatRefundDate }) {
   const client = api || { payOrder, getOrderPaymentStatus };
   let busy = false;
 
@@ -118,6 +144,7 @@ export function createCheckout({ order, view, api, validate = validateCard, now 
     fieldErrors: {},
     focusField: null,
     paid: null,
+    refunded: null,
   };
 
   function update(changes) {
@@ -133,11 +160,33 @@ export function createCheckout({ order, view, api, validate = validateCard, now 
       decline: null,
       fieldErrors: {},
       paid: { amountText: details.amountText, card: details.card, refusal },
+      refunded: null,
+    });
+  }
+
+  // `dateText` is already formatted, or null.
+  function showRefunded(dateText, refusal = null) {
+    update({
+      phase: 'refunded',
+      notice: null,
+      decline: null,
+      fieldErrors: {},
+      paid: null,
+      refunded: { dateText, refusal },
     });
   }
 
   // Newest first, so the first success is the latest.
   const succeededPayment = (status) => status.payments.find((p) => p.outcome === 'succeeded') || null;
+
+  const isRefunded = (status) => Boolean(status) && status.status === 'refunded';
+
+  // The refund's date from an order status: its refunded time, else the refund on the succeeded payment.
+  function refundDateFromStatus(status) {
+    const payment = succeededPayment(status);
+    const fromPayment = payment && payment.refund ? payment.refund.refunded_at : null;
+    return formatDate(status.refundedAt) || formatDate(fromPayment) || null;
+  }
 
   /** Load the order's payment status and show either the paid order or the form. */
   async function start() {
@@ -150,7 +199,9 @@ export function createCheckout({ order, view, api, validate = validateCard, now 
     update({ phase: 'loading', message: null });
     try {
       const status = await client.getOrderPaymentStatus(order.order);
-      if (status.kind === 'ok' && status.paid) {
+      if (status.kind === 'ok' && isRefunded(status)) {
+        showRefunded(refundDateFromStatus(status));
+      } else if (status.kind === 'ok' && status.paid) {
         showPaid(succeededPayment(status));
       } else if (status.kind === 'ok') {
         update({ phase: 'ready' });
@@ -193,8 +244,22 @@ export function createCheckout({ order, view, api, validate = validateCard, now 
     if (result.code === 'order_already_paid') {
       return recheck().then((status) => showPaid(status && succeededPayment(status), result.message));
     }
+    if (result.code === 'order_refunded') {
+      return showRefundedAfterRefusal(result);
+    }
     update({ phase: 'ready', notice: result.message });
     return Promise.resolve();
+  }
+
+  // The service's message as it is, then the refunded panel. The date comes from the refusal, else from a
+  // fresh status read; with neither, the panel has no date.
+  async function showRefundedAfterRefusal(result) {
+    let dateText = formatDate(result.refundedAt);
+    if (!dateText) {
+      const status = await recheck();
+      dateText = status && isRefunded(status) ? refundDateFromStatus(status) : null;
+    }
+    showRefunded(dateText, result.message);
   }
 
   /** Submit the form. Does nothing while the page is loading or a payment is processing. */
@@ -249,7 +314,9 @@ export function createCheckout({ order, view, api, validate = validateCard, now 
       } else {
         // No usable answer: the payment may have been recorded. Look before the customer tries again.
         const status = await recheck();
-        if (status && status.paid) {
+        if (status && isRefunded(status)) {
+          showRefunded(refundDateFromStatus(status));
+        } else if (status && status.paid) {
           showPaid(succeededPayment(status));
         } else {
           update({ phase: 'ready', notice: status ? result.message : result.message + NOT_SENT_NOTE });
@@ -311,6 +378,14 @@ export function mountCheckout(doc, search, api) {
         show('paid-card-row', Boolean(state.paid.card));
         text('paid-refusal', state.paid.refusal ?? '');
         show('paid-refusal', Boolean(state.paid.refusal));
+      }
+
+      show('refunded-panel', phase === 'refunded');
+      if (state.refunded) {
+        text('refunded-date', state.refunded.dateText ?? '');
+        show('refunded-date-row', Boolean(state.refunded.dateText));
+        text('refunded-refusal', state.refunded.refusal ?? '');
+        show('refunded-refusal', Boolean(state.refunded.refusal));
       }
 
       const formVisible = phase === 'ready' || phase === 'processing';

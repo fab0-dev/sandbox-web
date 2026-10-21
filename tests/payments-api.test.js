@@ -203,7 +203,7 @@ test('order payment status: paid with attempts', async () => {
 test('order payment status: no attempts means unpaid', async () => {
   const f = fakeFetch(200, { order_reference: 'o1', paid: false, payments: [] });
   const r = await apiWith(f).getOrderPaymentStatus('o1');
-  assert.deepEqual(r, { kind: 'ok', orderReference: 'o1', paid: false, payments: [] });
+  assert.deepEqual(r, { kind: 'ok', orderReference: 'o1', status: 'unpaid', paid: false, refundedAt: null, payments: [] });
 });
 
 test('order payment status: errors', async () => {
@@ -297,7 +297,7 @@ test('card data goes only to the service and is kept nowhere (D10)', async () =>
   assert.deepEqual(results[0].payment.card, { brand: 'visa', last4: '4242' });
   assert.deepEqual(Object.keys(results[0].payment).sort(), [
     'amount', 'card', 'created_at', 'currency', 'decline_reason', 'message',
-    'order_reference', 'outcome', 'payment_reference',
+    'order_reference', 'outcome', 'payment_reference', 'refund', 'refunded',
   ]);
   assert.deepEqual(logged, []);
   assert.deepEqual(storageSet, []);
@@ -311,4 +311,173 @@ test('the request object is not changed or kept by the client', async () => {
   assert.deepEqual(req, copy);
   assert.ok(!Object.values(api).some((v) => typeof v !== 'function'));
   assert.equal(r.request, undefined);
+});
+
+// ---- Refunds (the service's contract change) ----
+
+const REFUND = { amount: 2599, currency: 'USD', reason: 'Out of stock', refunded_at: '2026-10-19T09:30:00Z' };
+const REFUNDED_AT = '2026-10-19T09:30:00Z';
+const REFUNDED_MESSAGE = 'This order was refunded, so it cannot be paid again.';
+
+test('order payment status: unpaid, with status and no refund time', async () => {
+  const f = fakeFetch(200, { order_reference: 'o1', status: 'unpaid', paid: false, refunded_at: null, payments: [] });
+  const r = await apiWith(f).getOrderPaymentStatus('o1');
+  assert.deepEqual(r, { kind: 'ok', orderReference: 'o1', status: 'unpaid', paid: false, refundedAt: null, payments: [] });
+});
+
+test('order payment status: paid, not refunded', async () => {
+  const f = fakeFetch(200, { order_reference: 'o1', status: 'paid', paid: true, refunded_at: null, payments: [payment({ refund: null })] });
+  const r = await apiWith(f).getOrderPaymentStatus('o1');
+  assert.equal(r.kind, 'ok');
+  assert.equal(r.status, 'paid');
+  assert.equal(r.paid, true);
+  assert.equal(r.refundedAt, null);
+  assert.equal(r.payments[0].refunded, false);
+  assert.equal(r.payments[0].refund, null);
+});
+
+test('order payment status: refunded gives the refund time and the refund on the payment', async () => {
+  const attempts = [
+    payment({ refund: REFUND }),
+    payment({ payment_reference: 'pay_old', outcome: 'declined', decline_reason: 'card_declined', message: 'No.', refund: null }),
+  ];
+  const f = fakeFetch(200, { order_reference: 'o1', status: 'refunded', paid: false, refunded_at: REFUNDED_AT, payments: attempts });
+  const r = await apiWith(f).getOrderPaymentStatus('o1');
+  assert.equal(r.kind, 'ok');
+  assert.equal(r.status, 'refunded');
+  assert.equal(r.paid, false);
+  assert.equal(r.refundedAt, REFUNDED_AT);
+  assert.equal(r.payments[0].refunded, true);
+  assert.deepEqual(r.payments[0].refund, REFUND);
+  assert.equal(r.payments[0].outcome, 'succeeded');
+  assert.equal(r.payments[1].refunded, false);
+});
+
+test('order payment status: refunded without a usable time still reads as refunded, with no date', async () => {
+  for (const refunded_at of [undefined, null, 12, '']) {
+    const body = { order_reference: 'o1', status: 'refunded', paid: false, payments: [payment({ refund: REFUND })] };
+    if (refunded_at !== undefined) body.refunded_at = refunded_at;
+    const r = await apiWith(fakeFetch(200, body)).getOrderPaymentStatus('o1');
+    assert.equal(r.status, 'refunded');
+    assert.equal(r.refundedAt, refunded_at === '' ? '' : null);
+  }
+});
+
+test('order payment status: a refund time on an order that is not refunded is not taken', async () => {
+  const f = fakeFetch(200, { order_reference: 'o1', status: 'paid', paid: true, refunded_at: REFUNDED_AT, payments: [payment()] });
+  const r = await apiWith(f).getOrderPaymentStatus('o1');
+  assert.equal(r.refundedAt, null);
+});
+
+test('order payment status: an answer with no status is read by paid, as older readers do', async () => {
+  const paid = await apiWith(fakeFetch(200, { order_reference: 'o1', paid: true, payments: [payment()] })).getOrderPaymentStatus('o1');
+  assert.equal(paid.status, 'paid');
+  assert.equal(paid.paid, true);
+  assert.equal(paid.refundedAt, null);
+  assert.equal(paid.payments[0].refund, null);
+  const unpaid = await apiWith(fakeFetch(200, { order_reference: 'o1', paid: false, payments: [] })).getOrderPaymentStatus('o1');
+  assert.equal(unpaid.status, 'unpaid');
+  assert.equal(unpaid.refundedAt, null);
+});
+
+test('order payment status: a status the contract does not have is unexpected_response', async () => {
+  for (const body of [
+    { order_reference: 'o1', status: 'cancelled', paid: false, payments: [] },
+    { order_reference: 'o1', status: 7, paid: false, payments: [] },
+    { order_reference: 'o1', status: null, paid: false, payments: [] },
+    { order_reference: 'o1', status: 'paid', paid: true, payments: [payment({ refund: 'yes' })] },
+    { order_reference: 'o1', status: 'refunded', paid: false },
+  ]) {
+    const r = await apiWith(fakeFetch(200, body)).getOrderPaymentStatus('o1');
+    assert.equal(r.kind, 'error', JSON.stringify(body));
+    assert.equal(r.code, 'unexpected_response');
+  }
+});
+
+test('a payment is copied with its refund field by field', async () => {
+  const f = fakeFetch(200, {
+    payment: payment({ refund: { ...REFUND, card: { number: '4242424242424242' }, security_code: SECURITY_CODE, extra: 1 } }),
+    order_paid: true,
+  });
+  const r = await apiWith(f).payOrder(request());
+  assert.equal(r.kind, 'succeeded');
+  assert.equal(r.payment.refunded, true);
+  assert.deepEqual(r.payment.refund, REFUND);
+  assert.deepEqual(Object.keys(r.payment.refund).sort(), ['amount', 'currency', 'reason', 'refunded_at']);
+  assert.ok(!JSON.stringify(r).includes('4242424242424242'));
+  assert.ok(!JSON.stringify(r).includes(SECURITY_CODE));
+});
+
+test('a payment with refund null, or with no refund member, is not refunded', async () => {
+  for (const p of [payment({ refund: null }), payment()]) {
+    const r = await apiWith(fakeFetch(201, { payment: p, order_paid: true })).payOrder(request());
+    assert.equal(r.kind, 'succeeded');
+    assert.equal(r.payment.refunded, false);
+    assert.equal(r.payment.refund, null);
+  }
+  const declined = payment({ outcome: 'declined', decline_reason: 'card_declined', message: 'No.', refund: null });
+  const d = await apiWith(fakeFetch(201, { payment: declined, order_paid: false })).payOrder(request());
+  assert.equal(d.kind, 'declined');
+  assert.equal(d.payment.refunded, false);
+});
+
+test('a refund that does not fit the contract makes the answer unexpected_response', async () => {
+  for (const refund of [
+    'refunded',
+    true,
+    [],
+    {},
+    { ...REFUND, amount: '2599' },
+    { ...REFUND, amount: 25.99 },
+    { ...REFUND, currency: null },
+    { ...REFUND, reason: undefined },
+    { ...REFUND, refunded_at: 5 },
+  ]) {
+    const r = await apiWith(fakeFetch(201, { payment: payment({ refund }), order_paid: true })).payOrder(request());
+    assert.equal(r.kind, 'error', JSON.stringify(refund));
+    assert.equal(r.code, 'unexpected_response');
+  }
+});
+
+test('refused: order refunded keeps the service message as is and the refund time', async () => {
+  const f = fakeFetch(409, {
+    error: { code: 'order_refunded', message: REFUNDED_MESSAGE, order_reference: 'order 42/A', refunded_at: REFUNDED_AT },
+  });
+  const r = await apiWith(f).payOrder(request());
+  assert.equal(r.kind, 'refused');
+  assert.equal(r.status, 409);
+  assert.equal(r.code, 'order_refunded');
+  assert.equal(r.message, REFUNDED_MESSAGE);
+  assert.equal(r.orderReference, 'order 42/A');
+  assert.equal(r.refundedAt, REFUNDED_AT);
+  assert.equal(r.payment, undefined);
+});
+
+test('refused: order refunded without a time, or with an odd one, has refundedAt null', async () => {
+  for (const extra of [{}, { refunded_at: null }, { refunded_at: 5 }]) {
+    const f = fakeFetch(409, { error: { code: 'order_refunded', message: 'Refunded.', order_reference: 'o', ...extra } });
+    const r = await apiWith(f).payOrder(request());
+    assert.equal(r.kind, 'refused');
+    assert.equal(r.code, 'order_refunded');
+    assert.equal(r.refundedAt, null);
+  }
+});
+
+test('refund time is only carried on the order_refunded refusal', async () => {
+  const f = fakeFetch(409, { error: { code: 'order_already_paid', message: 'Paid.', order_reference: 'o', refunded_at: REFUNDED_AT } });
+  const r = await apiWith(f).payOrder(request());
+  assert.equal(r.code, 'order_already_paid');
+  assert.equal(r.refundedAt, undefined);
+});
+
+test('the old refusals and errors are unchanged by the refund code', async () => {
+  const paid = await apiWith(fakeFetch(409, {
+    error: { code: 'order_already_paid', message: 'This order has already been paid.', order_reference: 'o' },
+  })).payOrder(request());
+  assert.deepEqual(paid, { kind: 'refused', status: 409, code: 'order_already_paid', message: 'This order has already been paid.', orderReference: 'o' });
+  const unknown = await apiWith(fakeFetch(409, { error: { code: 'something_new', message: 'x' } })).payOrder(request());
+  assert.equal(unknown.kind, 'error');
+  assert.equal(unknown.code, 'something_new');
+  const noCode = await apiWith(fakeFetch(409, { error: { message: 'x' } })).payOrder(request());
+  assert.equal(noCode.code, 'unexpected_response');
 });

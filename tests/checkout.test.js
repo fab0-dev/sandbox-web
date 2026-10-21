@@ -2,7 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { createCheckout, mountCheckout, parseOrderParams, formatAmount } from '../src/checkout.js';
+import { createCheckout, mountCheckout, parseOrderParams, formatAmount, formatRefundDate } from '../src/checkout.js';
+
+// The refund date is shown in the browser's time zone. Fix it for the tests: Auckland is UTC+13 in
+// October, so a refund at 23:30 UTC on the 18th is on the 19th there.
+process.env.TZ = 'Pacific/Auckland';
 
 const CARD_NUMBER = '4242 4242 4242 4242';
 const SECURITY_CODE = '737';
@@ -34,6 +38,21 @@ const declinedPayment = (reason, message) =>
 
 const unpaid = { kind: 'ok', orderReference: 'ORD-1', paid: false, payments: [] };
 const paidStatus = { kind: 'ok', orderReference: 'ORD-1', paid: true, payments: [payment()] };
+
+const REFUNDED_AT = '2026-10-18T23:30:00Z';
+const REFUND_DATE = 'October 19, 2026';
+const refundedPayment = () => payment({
+  refund: { amount: 2599, currency: 'USD', reason: 'Out of stock', refunded_at: REFUNDED_AT },
+});
+const refundedStatus = (over = {}) => ({
+  kind: 'ok', orderReference: 'ORD-1', status: 'refunded', paid: false, refundedAt: REFUNDED_AT,
+  payments: [refundedPayment()], ...over,
+});
+const REFUSED_MESSAGE = 'This order was refunded, so it cannot be paid again.';
+const refusedRefunded = (over = {}) => ({
+  kind: 'refused', status: 409, code: 'order_refunded', message: REFUSED_MESSAGE,
+  orderReference: 'ORD-1', refundedAt: REFUNDED_AT, ...over,
+});
 
 // A fake API: records calls, answers from queues.
 function fakeApi({ status = [unpaid], pay = [] } = {}) {
@@ -573,4 +592,251 @@ test('page: the retry button after a load error loads the order again', async ()
   await settle();
   assert.equal(doc.getElementById('load-error').hidden, true);
   assert.equal(doc.getElementById('payment-form').hidden, false);
+});
+
+// ---- refunded orders: the logic ----
+
+test('formatRefundDate gives a long en-US date in the browser zone, or in the zone asked for', () => {
+  assert.equal(formatRefundDate(REFUNDED_AT), 'October 19, 2026'); // TZ is Pacific/Auckland here
+  assert.equal(formatRefundDate(REFUNDED_AT, 'America/Los_Angeles'), 'October 18, 2026');
+  assert.equal(formatRefundDate(REFUNDED_AT, 'UTC'), 'October 18, 2026');
+  assert.equal(formatRefundDate('2026-01-05T00:00:00Z', 'UTC'), 'January 5, 2026');
+});
+
+test('formatRefundDate gives null when there is no usable time', () => {
+  for (const value of [null, undefined, '', 'yesterday', 42, {}]) assert.equal(formatRefundDate(value), null);
+});
+
+test('a refunded order goes straight to the refunded panel, with the date and no form (D13)', async () => {
+  const { api, view } = await started({ status: [refundedStatus()] });
+  assert.equal(view.last.phase, 'refunded');
+  assert.deepEqual(view.last.refunded, { dateText: REFUND_DATE, refusal: null });
+  assert.equal(view.last.paid, null);
+  assert.deepEqual(api.calls.status, ['ORD-1']);
+  assert.equal(view.states.some((s) => s.phase === 'ready'), false, 'the form is never offered');
+});
+
+test('a refunded order is not shown as paid even though the payment succeeded', async () => {
+  const { view } = await started({ status: [refundedStatus()] });
+  assert.equal(view.last.phase, 'refunded');
+  assert.equal(view.states.some((s) => s.phase === 'paid'), false);
+});
+
+test('a refunded order takes the date from the refund on its payment when the status has no time', async () => {
+  const { view } = await started({ status: [refundedStatus({ refundedAt: null })] });
+  assert.equal(view.last.phase, 'refunded');
+  assert.equal(view.last.refunded.dateText, REFUND_DATE);
+});
+
+test('a refunded order with no time anywhere shows the panel without a date', async () => {
+  const { view } = await started({ status: [refundedStatus({ refundedAt: null, payments: [] })] });
+  assert.equal(view.last.phase, 'refunded');
+  assert.deepEqual(view.last.refunded, { dateText: null, refusal: null });
+});
+
+test('the shop\'s reason is not given to the view', async () => {
+  const { view } = await started({ status: [refundedStatus()] });
+  assert.ok(!JSON.stringify(view.states).includes('Out of stock'));
+});
+
+test('a refunded order cannot be submitted', async () => {
+  const { api, view, checkout } = await started({ status: [refundedStatus()], pay: [] });
+  await checkout.submit();
+  assert.equal(api.calls.pay.length, 0);
+  assert.equal(view.last.phase, 'refunded');
+});
+
+test('paying an order refunded meanwhile shows the service message, then refunded with the date from the refusal (D14)', async () => {
+  const { api, view, checkout } = await started({ status: [unpaid], pay: [refusedRefunded()] });
+  await checkout.submit();
+  assert.equal(view.last.phase, 'refunded');
+  assert.deepEqual(view.last.refunded, { dateText: REFUND_DATE, refusal: REFUSED_MESSAGE });
+  assert.equal(api.calls.pay.length, 1);
+  assert.equal(api.calls.status.length, 1, 'no extra read when the refusal gives the time');
+  assert.equal(view.cleared, 1);
+  assert.equal(view.last.notice, null);
+});
+
+test('a refusal without a time reads the status for the date', async () => {
+  const { api, view, checkout } = await started({
+    status: [unpaid, refundedStatus()],
+    pay: [refusedRefunded({ refundedAt: null })],
+  });
+  await checkout.submit();
+  assert.equal(api.calls.status.length, 2);
+  assert.deepEqual(view.last.refunded, { dateText: REFUND_DATE, refusal: REFUSED_MESSAGE });
+});
+
+test('a refusal with a time that cannot be read also reads the status', async () => {
+  const { api, view, checkout } = await started({
+    status: [unpaid, refundedStatus()],
+    pay: [refusedRefunded({ refundedAt: 'not a time' })],
+  });
+  await checkout.submit();
+  assert.equal(api.calls.status.length, 2);
+  assert.equal(view.last.refunded.dateText, REFUND_DATE);
+});
+
+test('a refusal with no time and a failed status read shows the panel without a date', async () => {
+  const failure = { kind: 'error', status: 0, code: 'network_error', message: 'No connection.' };
+  const { view, checkout } = await started({ status: [unpaid, failure], pay: [refusedRefunded({ refundedAt: null })] });
+  await checkout.submit();
+  assert.equal(view.last.phase, 'refunded');
+  assert.deepEqual(view.last.refunded, { dateText: null, refusal: REFUSED_MESSAGE });
+});
+
+test('a refusal with no time and a status read that throws shows the panel without a date', async () => {
+  const { view, checkout } = await started({ status: [unpaid, new Error('boom')], pay: [refusedRefunded({ refundedAt: null })] });
+  await checkout.submit();
+  assert.deepEqual(view.last.refunded, { dateText: null, refusal: REFUSED_MESSAGE });
+});
+
+test('a refusal with no time and a status read with no time shows the panel without a date', async () => {
+  const { view, checkout } = await started({
+    status: [unpaid, refundedStatus({ refundedAt: null, payments: [] })],
+    pay: [refusedRefunded({ refundedAt: null })],
+  });
+  await checkout.submit();
+  assert.deepEqual(view.last.refunded, { dateText: null, refusal: REFUSED_MESSAGE });
+});
+
+test('after the refunded panel a second submit makes no attempt', async () => {
+  const { api, checkout } = await started({ status: [unpaid], pay: [refusedRefunded(), { kind: 'succeeded', payment: payment() }] });
+  await checkout.submit();
+  await checkout.submit();
+  assert.equal(api.calls.pay.length, 1);
+});
+
+test('an unusable pay answer followed by a status that says refunded shows the refunded panel', async () => {
+  const failure = { kind: 'error', status: 500, code: 'internal_error', message: 'Something went wrong on our side.' };
+  const { view, checkout } = await started({ status: [unpaid, refundedStatus()], pay: [failure] });
+  await checkout.submit();
+  assert.equal(view.last.phase, 'refunded');
+  assert.deepEqual(view.last.refunded, { dateText: REFUND_DATE, refusal: null });
+});
+
+test('unpaid and paid, unrefunded orders behave as before, also with a status field (D15)', async () => {
+  const withStatus = (status, paid, payments) => ({ kind: 'ok', orderReference: 'ORD-1', status, paid, refundedAt: null, payments });
+  const unpaidNow = await started({ status: [withStatus('unpaid', false, [])] });
+  assert.equal(unpaidNow.view.last.phase, 'ready');
+  assert.equal(unpaidNow.view.last.refunded, null);
+  const paidNow = await started({ status: [withStatus('paid', true, [payment()])] });
+  assert.equal(paidNow.view.last.phase, 'paid');
+  assert.equal(paidNow.view.last.paid.amountText, '$25.99');
+  assert.equal(paidNow.view.last.refunded, null);
+});
+
+test('the already-paid refusal still shows paid, not refunded', async () => {
+  const refusal = { kind: 'refused', status: 409, code: 'order_already_paid', message: 'This order has already been paid.' };
+  const { view, checkout } = await started({ status: [unpaid, paidStatus], pay: [refusal] });
+  await checkout.submit();
+  assert.equal(view.last.phase, 'paid');
+  assert.equal(view.last.paid.refusal, 'This order has already been paid.');
+});
+
+// ---- refunded orders: the page ----
+
+test('page: a refunded order shows the refunded panel with the date and no form (D13)', async () => {
+  const doc = fakeDocument();
+  mountCheckout(doc, '?order=ORD-1&amount=2599&currency=USD', fakeApi({ status: [refundedStatus()] }));
+  await settle();
+  const panel = doc.getElementById('refunded-panel');
+  assert.equal(panel.hidden, false);
+  assert.equal(doc.getElementById('refunded-date').textContent, REFUND_DATE);
+  assert.equal(doc.getElementById('refunded-date-row').hidden, false);
+  assert.equal(doc.getElementById('refunded-refusal').hidden, true);
+  assert.equal(doc.getElementById('payment-form').hidden, true);
+  assert.equal(doc.getElementById('paid-panel').hidden, true);
+  assert.equal(doc.getElementById('loading').hidden, true);
+  assert.equal(doc.getElementById('decline-panel').hidden, true);
+  assert.ok(!doc.getElementById('refunded-panel').textContent.includes('Out of stock'));
+  // The panel text itself is in checkout.html.
+  const html = readFileSync(new URL('../checkout.html', import.meta.url), 'utf8');
+  assert.match(html, /<h2>This order was refunded<\/h2>/);
+});
+
+test('page: the refunded panel has no card form fields inside it and no Pay button', () => {
+  const html = readFileSync(new URL('../checkout.html', import.meta.url), 'utf8');
+  const panel = html.match(/<section id="refunded-panel"[\s\S]*?<\/section>/)[0];
+  assert.doesNotMatch(panel, /<input|<button|<form/);
+});
+
+test('page: a refunded order with no time shows the panel without the date row', async () => {
+  const doc = fakeDocument();
+  mountCheckout(doc, '?order=ORD-1&amount=2599&currency=USD', fakeApi({ status: [refundedStatus({ refundedAt: null, payments: [] })] }));
+  await settle();
+  assert.equal(doc.getElementById('refunded-panel').hidden, false);
+  assert.equal(doc.getElementById('refunded-date-row').hidden, true);
+  assert.equal(doc.getElementById('refunded-date').textContent, '');
+});
+
+test('page: pay refused as refunded shows the service message, then the refunded panel with the date (D14)', async () => {
+  const doc = fakeDocument();
+  const api = fakeApi({ pay: [refusedRefunded()] });
+  mountCheckout(doc, '?order=ORD-1&amount=2599&currency=USD', api);
+  await settle();
+  assert.equal(doc.getElementById('refunded-panel').hidden, true);
+  fillPage(doc);
+  doc.getElementById('payment-form').dispatch('submit');
+  await settle();
+  assert.equal(doc.getElementById('refunded-panel').hidden, false);
+  assert.equal(doc.getElementById('refunded-refusal').hidden, false);
+  assert.equal(doc.getElementById('refunded-refusal').textContent, REFUSED_MESSAGE);
+  assert.equal(doc.getElementById('refunded-date').textContent, REFUND_DATE);
+  assert.equal(doc.getElementById('payment-form').hidden, true);
+  assert.equal(doc.getElementById('form-notice').hidden, true);
+  assert.equal(doc.getElementById('number').value, '');
+  assert.equal(doc.getElementById('security_code').value, '');
+  assert.equal(api.calls.pay.length, 1);
+});
+
+test('page: pay refused as refunded without a time takes the date from a fresh status read', async () => {
+  const doc = fakeDocument();
+  const api = fakeApi({ status: [unpaid, refundedStatus()], pay: [refusedRefunded({ refundedAt: null })] });
+  mountCheckout(doc, '?order=ORD-1&amount=2599&currency=USD', api);
+  await settle();
+  fillPage(doc);
+  doc.getElementById('payment-form').dispatch('submit');
+  await settle();
+  assert.equal(api.calls.status.length, 2);
+  assert.equal(doc.getElementById('refunded-refusal').textContent, REFUSED_MESSAGE);
+  assert.equal(doc.getElementById('refunded-date').textContent, REFUND_DATE);
+  assert.equal(doc.getElementById('refunded-date-row').hidden, false);
+});
+
+test('page: pay refused as refunded with no time anywhere shows the message and the panel without a date', async () => {
+  const doc = fakeDocument();
+  const failure = { kind: 'error', status: 0, code: 'network_error', message: 'No connection.' };
+  const api = fakeApi({ status: [unpaid, failure], pay: [refusedRefunded({ refundedAt: null })] });
+  mountCheckout(doc, '?order=ORD-1&amount=2599&currency=USD', api);
+  await settle();
+  fillPage(doc);
+  doc.getElementById('payment-form').dispatch('submit');
+  await settle();
+  assert.equal(doc.getElementById('refunded-panel').hidden, false);
+  assert.equal(doc.getElementById('refunded-refusal').textContent, REFUSED_MESSAGE);
+  assert.equal(doc.getElementById('refunded-date-row').hidden, true);
+});
+
+test('page: the refunded panel is hidden for unpaid, paid and declined states', async () => {
+  const unpaidDoc = fakeDocument();
+  mountCheckout(unpaidDoc, '?order=ORD-1&amount=2599&currency=USD', fakeApi());
+  await settle();
+  assert.equal(unpaidDoc.getElementById('refunded-panel').hidden, true);
+
+  const paidDoc = fakeDocument();
+  mountCheckout(paidDoc, '?order=ORD-1&amount=2599&currency=USD', fakeApi({ status: [paidStatus] }));
+  await settle();
+  assert.equal(paidDoc.getElementById('refunded-panel').hidden, true);
+  assert.equal(paidDoc.getElementById('paid-panel').hidden, false);
+
+  const declinedDoc = fakeDocument();
+  const declined = { kind: 'declined', payment: declinedPayment('card_declined', 'Your card was declined. Try another card.') };
+  mountCheckout(declinedDoc, '?order=ORD-1&amount=2599&currency=USD', fakeApi({ pay: [declined] }));
+  await settle();
+  fillPage(declinedDoc);
+  declinedDoc.getElementById('payment-form').dispatch('submit');
+  await settle();
+  assert.equal(declinedDoc.getElementById('refunded-panel').hidden, true);
+  assert.equal(declinedDoc.getElementById('decline-panel').hidden, false);
 });

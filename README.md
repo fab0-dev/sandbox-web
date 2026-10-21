@@ -27,6 +27,9 @@ What the page does:
 - A declined payment shows the service's message as it is, on the same page, with the form ready to try again, with the same card or another (D3, D5). The decline reason is set as `data-reason` on the message so the style can follow it.
 - Field errors from the service (`validation_failed`) show next to the same fields as the local ones. The `order_already_paid` refusal shows the order as paid with the service's message and no form (D6). Other refusals show the service's message above the form.
 - If a payment call fails without a usable answer (no connection, a server error), the page reads the order's status before it offers the form again, so a payment that went through shows as paid.
+- A refunded order shows as refunded and nothing else (D13). The page keys on the order's `status` from Order payment status: `refunded` goes straight to the refunded panel, "This order was refunded", with the refund date and no card form, no Pay button and no way to pay. The date is the refund's time in the customer's own time zone as a long date (`Intl.DateTimeFormat`, `en-US`, for example "October 19, 2026"). The shop's reason for the refund is not shown. If the service sends no usable time, the panel is shown without a date.
+- If the order is refunded while the checkout is open, Pay order is refused with `order_refunded` (D14). The page shows the service's message as it is, then the refunded panel with the date. The time comes from the refusal; if it has none, from a fresh Order payment status read; if neither gives one, the panel has no date. No attempt is recorded. A refunded order is final: it cannot be paid again.
+- Unpaid and paid, unrefunded orders, declines, retries, the already-paid refusal and the double-submit lock work as before (D15).
 - The card number and security code are cleared after each attempt that was sent to the service, whatever the answer. When a local check stops the submit, nothing was sent and what the customer typed stays so they can fix it. The card data is read from the form only inside the submit, handed to the API client, and kept nowhere else (D10).
 
 The amount comes from the link, as the service charges the amount it is sent (spec, open question 2).
@@ -55,10 +58,14 @@ To use another service address, set it before the module loads, as described in 
 
 The test cards that give each outcome are documented in the service repository, `docs/test-cards.md`. For example `4242 4242 4242 4242` succeeds, `4000 0000 0000 0002` is declined, and `4000 0000 0000 9995` has insufficient funds. Use any name, an expiry in the future and a 3-digit security code.
 
+### Browser run against the service
+
+`npm run e2e` starts the payments service from its repository and this folder, and drives Chromium through the checkout: an unpaid and a paid order, a refunded order opened (D13) and an order refunded while its checkout is open (D14), with no fake API. It needs `npm install` first (Playwright) and the service repository next to this one (or `PAYMENTS_SERVICE_DIR`). What was run, how the refunds were made, the cards and orders used and what was seen is in [docs/e2e-run.md](docs/e2e-run.md).
+
 ### Tests
 
 ```
 npm test
 ```
 
-runs all tests with Node's test runner (`node --test "tests/**/*.test.js"`). `tests/checkout.test.js` covers the logic with a fake API and the page binding with a small stand-in for the elements of `checkout.html`; no browser is needed.
+runs all tests with Node's test runner (`node --test "tests/**/*.test.js"`). `tests/checkout.test.js` covers the logic with a fake API and the page binding with a small stand-in for the elements of `checkout.html`; no browser is needed. The refund date depends on the time zone, so the test fixes it (`TZ=Pacific/Auckland`).
