@@ -27,6 +27,9 @@ What the page does:
 - A declined payment shows the service's message as it is, on the same page, with the form ready to try again, with the same card or another (D3, D5). The decline reason is set as `data-reason` on the message so the style can follow it.
 - Field errors from the service (`validation_failed`) show next to the same fields as the local ones. The `order_already_paid` refusal shows the order as paid with the service's message and no form (D6). Other refusals show the service's message above the form.
 - If a payment call fails without a usable answer (no connection, a server error), the page reads the order's status before it offers the form again, so a payment that went through shows as paid.
+- A refunded order shows as refunded and nothing else (D13). The page keys on the order's `status` from Order payment status: `refunded` goes straight to the refunded panel, "This order was refunded", with the refund date and no card form, no Pay button and no way to pay. The date is the refund's time in the customer's own time zone as a long date (`Intl.DateTimeFormat`, `en-US`, for example "October 19, 2026"). The shop's reason for the refund is not shown. If the service sends no usable time, the panel is shown without a date.
+- If the order is refunded while the checkout is open, Pay order is refused with `order_refunded` (D14). The page shows the service's message as it is, then the refunded panel with the date. The time comes from the refusal; if it has none, from a fresh Order payment status read; if neither gives one, the panel has no date. No attempt is recorded. A refunded order is final: it cannot be paid again.
+- Unpaid and paid, unrefunded orders, declines, retries, the already-paid refusal and the double-submit lock work as before (D15).
 - The card number and security code are cleared after each attempt that was sent to the service, whatever the answer. When a local check stops the submit, nothing was sent and what the customer typed stays so they can fix it. The card data is read from the form only inside the submit, handed to the API client, and kept nowhere else (D10).
 
 The amount comes from the link, as the service charges the amount it is sent (spec, open question 2).
@@ -61,4 +64,4 @@ The test cards that give each outcome are documented in the service repository, 
 npm test
 ```
 
-runs all tests with Node's test runner (`node --test "tests/**/*.test.js"`). `tests/checkout.test.js` covers the logic with a fake API and the page binding with a small stand-in for the elements of `checkout.html`; no browser is needed.
+runs all tests with Node's test runner (`node --test "tests/**/*.test.js"`). `tests/checkout.test.js` covers the logic with a fake API and the page binding with a small stand-in for the elements of `checkout.html`; no browser is needed. The refund date depends on the time zone, so the test fixes it (`TZ=Pacific/Auckland`).

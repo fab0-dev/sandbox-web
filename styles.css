@@ -75,6 +75,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 .alert p:last-child { margin-bottom: 0; }
 .alert-error { color: var(--error); background: var(--error-bg); }
 .alert-success { color: var(--success); background: var(--success-bg); }
+.alert-refunded { color: var(--text); background: #eef2f7; border: 1px solid var(--line); }
 
 /* A temporary failure is not the customer's card: show it in a calmer colour. */
 #decline-panel[data-reason="processing_error"] { color: #7a4b00; background: #fff4de; }
