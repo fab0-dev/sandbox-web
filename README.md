@@ -58,6 +58,10 @@ To use another service address, set it before the module loads, as described in 
 
 The test cards that give each outcome are documented in the service repository, `docs/test-cards.md`. For example `4242 4242 4242 4242` succeeds, `4000 0000 0000 0002` is declined, and `4000 0000 0000 9995` has insufficient funds. Use any name, an expiry in the future and a 3-digit security code.
 
+### Browser run against the service
+
+`npm run e2e` starts the payments service from its repository and this folder, and drives Chromium through the checkout: an unpaid and a paid order, a refunded order opened (D13) and an order refunded while its checkout is open (D14), with no fake API. It needs `npm install` first (Playwright) and the service repository next to this one (or `PAYMENTS_SERVICE_DIR`). What was run, how the refunds were made, the cards and orders used and what was seen is in [docs/e2e-run.md](docs/e2e-run.md).
+
 ### Tests
 
 ```
